@@ -186,20 +186,54 @@ ctg-signaturestr: <MD5签名>
 
 ## 云桌面 vs 云手机协议对比 (Cloud Desktop vs Cloud Phone Protocol Comparison)
 
-### 主要区别 (Key Differences)
+### MAIN 通道的相似之处 (MAIN Channel Similarities)
 
-天翼云桌面和云手机虽然都使用 WebSocket 保活机制，但协议实现完全不同：
+云桌面和云手机的 MAIN 通道有很多共同点：
+
+1. **相同的 WebSocket 路径格式**: 都使用 `wss://{server}/clinkProxy/{desktopId}/MAIN`
+2. **相同的握手机制**: 建立连接后，首先发送 JSON 格式的握手消息，包含 SSL 证书信息
+   ```json
+   {
+     "type": 1,
+     "ssl": 1,
+     "host": "<host>",
+     "port": "<port>",
+     "ca": "<CaCert>",
+     "cert": "<ClientCert>",
+     "key": "<ClientKey>",
+     "servername": "<Host>:<Port>"
+   }
+   ```
+3. **相同的 RSA 挑战-响应机制**: 两者都使用 RSA 加密的挑战响应来验证客户端身份
+   - 服务器发送挑战数据（包含公钥）
+   - 客户端使用相同的 RSA 加密算法处理并返回响应
+   - 加密过程包括 SHA-1 哈希和 PKCS#1 填充
+4. **二进制消息格式**: 都使用 ArrayBuffer (二进制) 格式传输数据
+5. **独立的保活连接**: MAIN 通道都是独立于实际数据传输的控制/保活通道
+6. **不干扰用户操作**: 保活机制都不会影响正常的远程桌面/手机操作
+
+### MAIN 通道的区别 (MAIN Channel Differences)
+
+虽然底层的 RSA 挑战-响应机制相同，但两者在保活策略和额外协议上有所不同：
 
 | 特性 | 云桌面 (Cloud Desktop) | 云手机 (Cloud Phone) |
 |------|----------------------|---------------------|
-| **WebSocket 通道** | 单通道 MAIN | 8 个通道 (MAIN, DISPLAY, CURSOR, RECORD, PLAYBACK, PORT×2, DATA, INPUTS) |
-| **心跳协议** | REDQ 协议 (`52 45 44 51 02`) | 简单二进制 (`07 00` / `09 00`) |
-| **心跳包格式** | REDQ challenge-response (变长) | 固定 6 字节 |
-| **心跳间隔** | 被动响应 (60秒强制重连) | 主动发送，每 5 秒 |
-| **加密方式** | RSA 加密响应 | 无加密 (明文) |
-| **握手方式** | JSON + 证书信息 | 相似 (JSON) |
-| **额外协议** | 无 | 时间同步 (`03/04`)、设备信息 (`6b/6d`)、传感器 (`82`) |
-| **端口** | 动态分配 | 9011 |
+| **挑战包标识** | `52 45 44 51 02` (REDQ) | 可能使用相同或类似标识 |
+| **主动心跳** | 无，仅被动响应挑战 | 有，每 5 秒发送 `07 00 00 00 00 00` |
+| **心跳响应** | 无简单心跳 | 收到 `09 00 00 00 00 00` |
+| **时间同步** | 无 | 有 (`03 00` / `04 00`) |
+| **设备信息交换** | 无 | 有 (`6b 00` / `6d 00`) |
+| **传感器通知** | 无 | 有 (`82 00`) |
+| **重连策略** | 60秒强制重连 | 依靠持续心跳 |
+
+### 其他差异 (Other Differences)
+
+| 特性 | 云桌面 (Cloud Desktop) | 云手机 (Cloud Phone) |
+|------|----------------------|---------------------|
+| **WebSocket 通道数** | 仅 MAIN | 8 个通道 (MAIN + DISPLAY + CURSOR + RECORD + PLAYBACK + PORT×2 + DATA + INPUTS) |
+| **显示传输** | 可能使用 RDP/VNC 等其他协议 | 通过独立 DISPLAY 通道 |
+| **输入传输** | 可能使用 RDP/VNC 等其他协议 | 通过独立 INPUTS 通道 |
+| **端口** | 动态分配 | 固定 9011 |
 
 ### 云桌面协议详情 (Cloud Desktop Protocol)
 
@@ -237,27 +271,33 @@ ctg-signaturestr: <MD5签名>
 接收: 82 00 0f 00 00 00 0b 00 00 00 "hinge_angle"
 ```
 
-### 为什么协议不同？(Why Different Protocols?)
+### 为什么有这些差异？(Why These Differences?)
 
 1. **设备类型差异**: 云桌面是完整的虚拟机环境，云手机是模拟移动设备
-2. **功能需求**: 云手机需要传感器数据 (电池、加速度、铰链角度等)，云桌面不需要
-3. **显示架构**: 云手机使用独立的 DISPLAY 通道传输画面，云桌面可能使用不同的远程协议 (RDP/VNC)
-4. **安全级别**: 云桌面使用 RSA 加密的挑战响应，云手机使用简单心跳
+2. **功能需求**: 云手机需要传感器数据 (电池、加速度、铰链角度等) 和更频繁的状态同步
+3. **显示架构**: 云手机使用多个独立通道分离不同类型的数据流，云桌面可能使用集成的远程协议
+4. **保活策略**: 云桌面使用周期性重连，云手机使用持续心跳维持连接
 
 ### 相同点 (Similarities)
 
-1. 都使用 WebSocket 的 MAIN 通道进行保活
-2. 都使用 `/clinkProxy/{deviceId}/MAIN` 路径格式
-3. 都需要初始 JSON 握手 (包含证书信息)
-4. 都采用二进制消息格式
-5. 都不干扰正常的用户操作 (独立连接)
+上述 MAIN 通道的相似之处已经详细说明，核心共同点包括：
+1. 相同的 WebSocket 连接路径和握手方式
+2. **相同的 RSA 挑战-响应加密机制** (这是最重要的相似点)
+3. 二进制消息格式和独立连接设计
+4. 都不干扰正常的用户操作
 
 ## 总结 (Summary)
 
 CtYun 云桌面保活接口通过 WebSocket 连接到云桌面代理服务器，使用 **REDQ 协议**发送和响应保活心跳包。由于采用独立连接和被动响应模式，只处理特定的保活校验包，不会干扰用户的正常远程桌面操作。这种设计既实现了会话保持的目的，又不影响用户体验。
 
-**注意**: 如果您需要为天翼云手机实现保活功能，需要使用完全不同的协议 (简单的 `07 00` / `09 00` 心跳包，每 5 秒发送一次)，本项目的代码不适用于云手机。
+**重要发现**: 云桌面和云手机的 MAIN 通道在核心机制上**高度相似**，特别是：
+- 都使用相同的 WebSocket 路径格式和 JSON 握手
+- **都使用相同的 RSA 挑战-响应加密机制**来验证客户端
+- 主要差异在于云手机增加了额外的心跳包、时间同步、设备信息等辅助协议，以及使用了多通道架构
 
 The CtYun cloud desktop keep-alive interface connects to the cloud desktop proxy server via WebSocket and uses the **REDQ protocol** to send and respond to keep-alive heartbeat packets. Since it uses an independent connection and passive response mode, only handling specific keep-alive challenge packets, it does not interfere with normal user remote desktop operations. This design achieves session maintenance without affecting user experience.
 
-**Note**: If you need to implement keep-alive for CtYun Cloud Phone, you'll need a completely different protocol (simple `07 00` / `09 00` heartbeat packets every 5 seconds). This project's code is not applicable to cloud phones.
+**Important Finding**: The MAIN channels of cloud desktop and cloud phone are **highly similar** in core mechanisms:
+- Both use the same WebSocket path format and JSON handshake
+- **Both use the same RSA challenge-response encryption mechanism** for client verification
+- The main differences are that cloud phone adds additional heartbeat packets, time sync, device info, and other auxiliary protocols, plus uses a multi-channel architecture
