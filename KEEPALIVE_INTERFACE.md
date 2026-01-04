@@ -108,6 +108,96 @@ Hex: 52 45 44 51 02 ...
 ### 5. 多设备并发支持 (Multi-Device Concurrency)
 程序为每个云桌面创建独立的保活任务（`KeepAliveWorkerWithForcedReset`），支持多台设备同时保活，互不干扰。
 
+### 6. 为什么不会顶号？(Why No Account Conflicts?)
+
+**"顶号"是指多个客户端使用同一账号登录时，新的登录会踢掉旧的会话。本保活程序不会造成顶号，原因如下：**
+
+#### 6.1 使用已绑定的设备码 (Uses Bound Device Code)
+```csharp
+var cyApi = new CtYunApi(deviceCode);  // 使用本地存储的设备码
+```
+- 每个设备有唯一的设备码 (Device Code)，格式为 `web_` + 32位随机字符串
+- 设备码在首次使用时需要通过短信验证绑定到账号
+- 后续使用该设备码不会触发顶号，因为服务器识别为**同一设备的多个连接**
+
+#### 6.2 只建立监控连接，不创建新会话 (Monitoring Connection, Not New Session)
+```csharp
+var connectResult = await cyApi.ConnectAsync(d.DesktopId);
+// API: POST /api/desktop/client/connect
+```
+- 调用的是 `connect` 接口，获取已存在桌面的连接信息
+- **不是**创建新桌面或新登录会话的接口
+- 仅建立 MAIN 通道的 WebSocket 连接进行保活监控
+
+#### 6.3 连接类型不冲突 (Connection Type Compatibility)
+保活程序建立的连接特点：
+- **MAIN 通道**: 仅用于心跳和认证验证
+- **无显示通道**: 不建立 DISPLAY、CURSOR、INPUTS 等控制通道
+- **被动监听**: 只响应服务器的挑战包，不发送任何控制指令
+
+正常用户连接的特点：
+- **完整通道**: 建立 MAIN + DISPLAY + CURSOR + INPUTS 等完整通道
+- **交互操作**: 发送鼠标、键盘输入，接收屏幕画面
+- **主动控制**: 实际控制云桌面
+
+两种连接类型可以**共存**，因为：
+1. 服务器允许同一设备的多个连接（设备码相同）
+2. MAIN 通道的保活连接不占用交互资源
+3. 保活连接只维持会话状态，不执行实际操作
+
+#### 6.4 设备绑定机制 (Device Binding Mechanism)
+```csharp
+// 首次使用需要绑定设备
+await api.GetSmsCodeAsync(userphone);
+await api.BindingDeviceAsync(verificationCode);
+```
+- 新设备首次使用时必须通过短信验证绑定
+- 绑定后该设备码与账号关联，成为**授权设备**
+- 授权设备的连接不会相互踢出，因为服务器认为是合法的多点接入
+
+#### 6.5 会话层与连接层的区别 (Session vs Connection Layer)
+```
+用户账号 (Account)
+  └─ 会话 (Session) ← 保活维护这一层，防止超时
+      ├─ 保活连接 (Keep-alive Connection): MAIN 通道 WebSocket
+      └─ 用户连接 (User Connection): 完整的远程桌面连接
+```
+
+- **会话层**: 账号登录状态，由 Token/Cookie 维护
+- **连接层**: 实际的网络连接（WebSocket、RDP等）
+- 保活维护的是**会话层**的活跃状态
+- 不影响**连接层**的用户实际操作
+
+#### 6.6 实际应用场景 (Practical Use Case)
+```
+情景：用户需要长时间运行任务但偶尔才需要查看
+
+1. 用户在云桌面上启动长时间任务（如数据处理、渲染等）
+2. 启动保活程序，维持会话不超时
+3. 用户断开远程桌面连接（任务继续运行）
+4. 保活程序继续工作，防止会话被回收
+5. 用户需要时可以随时重新连接查看进度
+6. ✓ 用户重连时不会被顶号，因为会话一直保持活跃
+```
+
+#### 6.7 技术验证 (Technical Verification)
+从代码实现可以验证不会顶号：
+```csharp
+// 1. 使用绑定的设备码
+client.DefaultRequestHeaders.Add("ctg-devicecode", deviceCode);
+
+// 2. 只连接 MAIN 通道
+var uri = new Uri($"wss://{host}/clinkProxy/{desktopId}/MAIN");
+
+// 3. 只响应保活挑战，不发送控制命令
+if (hex.StartsWith("5245445102")) {
+    var response = encryptor.Execute(data);
+    await ws.SendAsync(response, ...);
+}
+```
+
+**总结**: 保活程序通过使用已绑定的设备码、仅建立监控性质的 MAIN 通道连接、被动响应模式等机制，确保不会与用户的正常连接冲突，实现了"保持会话活跃"而"不干扰用户操作"的目标。
+
 ## 技术实现细节 (Technical Implementation Details)
 
 ### 定时重连机制 (Timed Reconnection)
