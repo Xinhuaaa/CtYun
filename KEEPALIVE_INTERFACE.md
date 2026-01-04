@@ -1,10 +1,14 @@
-# CtYun 保活接口说明 (Keep-Alive Interface Documentation)
+# CtYun 云桌面保活接口说明 (Cloud Desktop Keep-Alive Interface Documentation)
+
+> **重要说明**: 本文档描述的是**天翼云桌面 (Cloud Desktop)** 的保活协议，与**天翼云手机 (Cloud Phone)** 使用的协议不同。云手机使用不同的心跳机制和多通道架构，详见文档末尾的对比说明。
+>
+> **Important Note**: This document describes the keep-alive protocol for **CtYun Cloud Desktop**, which differs from the **Cloud Phone** protocol. Cloud Phone uses a different heartbeat mechanism and multi-channel architecture. See comparison at the end.
 
 ## 概述 (Overview)
 
 本项目通过 WebSocket 连接实现天翼云桌面的保活功能，确保云桌面会话保持活跃状态，避免因长时间无操作而被服务器断开连接。
 
-This project implements keep-alive functionality for CtYun (China Telecom Cloud) desktops through WebSocket connections, ensuring cloud desktop sessions remain active and preventing disconnection due to inactivity.
+This project implements keep-alive functionality for CtYun (China Telecom Cloud) **desktops** through WebSocket connections, ensuring cloud desktop sessions remain active and preventing disconnection due to inactivity.
 
 ## 保活接口 (Keep-Alive Interface)
 
@@ -180,8 +184,80 @@ ctg-signaturestr: <MD5签名>
 3. **自动化任务**: 在云桌面上运行自动化脚本，避免会话超时
 4. **资源预留**: 保持云桌面分配状态，避免被系统回收
 
+## 云桌面 vs 云手机协议对比 (Cloud Desktop vs Cloud Phone Protocol Comparison)
+
+### 主要区别 (Key Differences)
+
+天翼云桌面和云手机虽然都使用 WebSocket 保活机制，但协议实现完全不同：
+
+| 特性 | 云桌面 (Cloud Desktop) | 云手机 (Cloud Phone) |
+|------|----------------------|---------------------|
+| **WebSocket 通道** | 单通道 MAIN | 8 个通道 (MAIN, DISPLAY, CURSOR, RECORD, PLAYBACK, PORT×2, DATA, INPUTS) |
+| **心跳协议** | REDQ 协议 (`52 45 44 51 02`) | 简单二进制 (`07 00` / `09 00`) |
+| **心跳包格式** | REDQ challenge-response (变长) | 固定 6 字节 |
+| **心跳间隔** | 被动响应 (60秒强制重连) | 主动发送，每 5 秒 |
+| **加密方式** | RSA 加密响应 | 无加密 (明文) |
+| **握手方式** | JSON + 证书信息 | 相似 (JSON) |
+| **额外协议** | 无 | 时间同步 (`03/04`)、设备信息 (`6b/6d`)、传感器 (`82`) |
+| **端口** | 动态分配 | 9011 |
+
+### 云桌面协议详情 (Cloud Desktop Protocol)
+
+**本项目实现的协议**：
+- **初始包**: `52 45 44 51 02 00 00 00 02 00 00 00 1a 00 ...` (REDQ + payload)
+- **挑战包**: 服务器发送以 `52 45 44 51 02` 开头的校验数据
+- **响应包**: 客户端使用 RSA 加密后返回
+- **工作模式**: 被动响应，只在收到挑战时才回应
+- **连接策略**: 每 60 秒强制断开重连，防止连接僵死
+
+### 云手机协议详情 (Cloud Phone Protocol)
+
+**心跳包示例**：
+```
+发送: 07 00 00 00 00 00  # 心跳请求
+接收: 09 00 00 00 00 00  # 心跳响应
+```
+
+**时间同步包**：
+```
+发送: 03 00 0c 00 00 00 [12 bytes timestamp/sequence]
+接收: 04 00 0c 00 00 00 [12 bytes timestamp/sequence]
+```
+
+**设备信息包**：
+```
+发送: 6b 00 [length] [payload]  # 分辨率、JSON配置
+接收: 6d 00 [length] [payload]  # 设备状态、JSON配置
+```
+
+**传感器通知**：
+```
+接收: 82 00 0b 00 00 00 07 00 00 00 "battery"
+接收: 82 00 10 00 00 00 0c 00 00 00 "acceleration"
+接收: 82 00 0f 00 00 00 0b 00 00 00 "hinge_angle"
+```
+
+### 为什么协议不同？(Why Different Protocols?)
+
+1. **设备类型差异**: 云桌面是完整的虚拟机环境，云手机是模拟移动设备
+2. **功能需求**: 云手机需要传感器数据 (电池、加速度、铰链角度等)，云桌面不需要
+3. **显示架构**: 云手机使用独立的 DISPLAY 通道传输画面，云桌面可能使用不同的远程协议 (RDP/VNC)
+4. **安全级别**: 云桌面使用 RSA 加密的挑战响应，云手机使用简单心跳
+
+### 相同点 (Similarities)
+
+1. 都使用 WebSocket 的 MAIN 通道进行保活
+2. 都使用 `/clinkProxy/{deviceId}/MAIN` 路径格式
+3. 都需要初始 JSON 握手 (包含证书信息)
+4. 都采用二进制消息格式
+5. 都不干扰正常的用户操作 (独立连接)
+
 ## 总结 (Summary)
 
-CtYun 保活接口通过 WebSocket 连接到云桌面代理服务器，使用 REDQ 协议发送和响应保活心跳包。由于采用独立连接和被动响应模式，只处理特定的保活校验包，不会干扰用户的正常远程桌面操作。这种设计既实现了会话保持的目的，又不影响用户体验。
+CtYun 云桌面保活接口通过 WebSocket 连接到云桌面代理服务器，使用 **REDQ 协议**发送和响应保活心跳包。由于采用独立连接和被动响应模式，只处理特定的保活校验包，不会干扰用户的正常远程桌面操作。这种设计既实现了会话保持的目的，又不影响用户体验。
 
-The CtYun keep-alive interface connects to the cloud desktop proxy server via WebSocket and uses the REDQ protocol to send and respond to keep-alive heartbeat packets. Since it uses an independent connection and passive response mode, only handling specific keep-alive challenge packets, it does not interfere with normal user remote desktop operations. This design achieves session maintenance without affecting user experience.
+**注意**: 如果您需要为天翼云手机实现保活功能，需要使用完全不同的协议 (简单的 `07 00` / `09 00` 心跳包，每 5 秒发送一次)，本项目的代码不适用于云手机。
+
+The CtYun cloud desktop keep-alive interface connects to the cloud desktop proxy server via WebSocket and uses the **REDQ protocol** to send and respond to keep-alive heartbeat packets. Since it uses an independent connection and passive response mode, only handling specific keep-alive challenge packets, it does not interfere with normal user remote desktop operations. This design achieves session maintenance without affecting user experience.
+
+**Note**: If you need to implement keep-alive for CtYun Cloud Phone, you'll need a completely different protocol (simple `07 00` / `09 00` heartbeat packets every 5 seconds). This project's code is not applicable to cloud phones.
