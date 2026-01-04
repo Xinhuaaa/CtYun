@@ -6,7 +6,9 @@
 
 本项目使用 WebSocket 连接到天翼云桌面代理服务器 (`wss://{host}/clinkProxy/{desktopId}/MAIN`)，通过 REDQ 协议发送和响应保活心跳包。保活程序采用独立连接和被动响应模式，只处理特定的保活校验包，**不会干扰用户的正常远程桌面操作**。
 
-详细的技术说明请查看：[保活接口详细文档](KEEPALIVE_INTERFACE.md)
+**技术文档**:
+- [保活接口详细文档](KEEPALIVE_INTERFACE.md) - 完整的协议说明、对比分析
+- [MAIN 通道通信模拟](MAIN_CHANNEL_SIMULATION.md) - WebSocket 通信流程模拟演示
 
 ## 使用指南
 
